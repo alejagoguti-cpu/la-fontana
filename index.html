@@ -361,21 +361,47 @@
     const P = PARADAS[s]; if (P.pedida) return; P.pedida = true;
     let hechas = 0;
     const cargarIdx = async (i) => {
-      const im = await cargar(nombre(s, 's', i)); P.chicas[i] = im; hechas++;
-      if (im && !P.ok) { P.ok = true; pintarMapa(); }
-      if (s === est) dirty = true;
+      const im = await cargar(nombre(s, 's', i));
+      if (im) {
+        P.chicas[i] = im; hechas++;
+        if (!P.ok) { P.ok = true; pintarMapa(); }
+        if (s === est) dirty = true;
+      }
       if (alAbrir) alAbrir(Math.min(hechas, 14), 14);
     };
     // Prioridad alrededor del ángulo actual
     const orden = []; for (let d = 0; d < G.N; d++) orden.push(((d % 2 ? actual - Math.ceil(d / 2) : actual + d / 2) % G.N + G.N) % G.N);
     await Promise.all(orden.slice(0, 14).map(cargarIdx));
     for (let k = 14; k < orden.length; k += 8) await Promise.all(orden.slice(k, k + 8).map(cargarIdx));
+    if (s === est) dirty = true;
+  }
+
+  function cercana(s, i) {
+    // 1. Busca en la parada actual la vista más cercana ya cargada
+    const C = PARADAS[s].chicas, G_imgs = PARADAS[s].grandes;
+    for (let d = 0; d < G.N; d++) {
+      const idx1 = (i + d) % G.N, idx2 = (i - d + G.N) % G.N;
+      const a = G_imgs[idx1] || C[idx1] || G_imgs[idx2] || C[idx2];
+      if (a) return a;
+    }
+    // 2. Si la parada actual aún no tiene imágenes o está cargando, usa La Fontana (parada 0, 100% disponible)
+    if (s !== 0) {
+      const C0 = PARADAS[0].chicas, G0 = PARADAS[0].grandes;
+      for (let d = 0; d < G.N; d++) {
+        const idx1 = (i + d) % G.N, idx2 = (i - d + G.N) % G.N;
+        const a = G0[idx1] || C0[idx1] || G0[idx2] || C0[idx2];
+        if (a) return a;
+      }
+    }
+    return null;
   }
 
   function pedirGrande(i) {
     const P = PARADAS[est], s = est;
     if (P.grandes[i] !== undefined) return; P.grandes[i] = null;
-    cargar(nombre(s, 'f', i)).then(im => { P.grandes[i] = im; if (est === s && actual === i) dirty = true; });
+    cargar(nombre(s, 'f', i)).then(im => {
+      if (im) { P.grandes[i] = im; if (est === s && actual === i) dirty = true; }
+    });
   }
 
   let encuadre = { s: 1, ox: 0, oy: 0, w: 1, h: 1 }, previa = null, fundido = 0, ultima = null;
@@ -395,11 +421,13 @@
 
   function dibujar() {
     const P = PARADAS[est], movil = arrastre || Math.abs(vel) > 0.02 || auto;
-    const im = movil ? (P.chicas[actual] || P.grandes[actual] || P.chicas[0]) : (P.grandes[actual] || P.chicas[actual] || P.chicas[0]);
+    let im = movil ? (P.chicas[actual] || P.grandes[actual]) : (P.grandes[actual] || P.chicas[actual]);
+    if (!im) im = cercana(est, actual);
     if (!im) { if (previa) cubrir(previa, 1, zoom); return; }
+
     ctx.imageSmoothingQuality = 'high';
     const r = cubrir(im, 1, zoom);
-    if (previa) {
+    if (previa && previa !== im) {
       const k = Math.min(1, (performance.now() - fundido) / 400);
       if (k < 1) { cubrir(previa, 1 - k, zoom); dirty = true; } else previa = null;
     }
@@ -618,18 +646,35 @@
   }
 
   tam(); pintarMapa();
-  cargarParada(est, (n, de) => {
-    $('cargaBarra').style.width = Math.max(4, n / de * 100) + '%';
-    $('cargaTxt').textContent = 'Cargando vistas · ' + n + ' de ' + de;
-    if (n >= de) {
+  // Cargar parada 0 (La Fontana) siempre como respaldo inmediato
+  cargarParada(0);
+  if (est !== 0) {
+    cargarParada(est, (n, de) => {
+      $('cargaBarra').style.width = Math.max(4, n / de * 100) + '%';
+      $('cargaTxt').textContent = 'Cargando vistas · ' + n + ' de ' + de;
+      if (n >= 4) $('carga').classList.add('fuera');
+    }).then(() => {
       $('carga').classList.add('fuera');
-      setTimeout(() => $('ayuda').classList.add('on'), 600);
-      setTimeout(() => $('ayuda').classList.remove('on'), 6000);
-    }
-  }).then(() => {
-    $('carga').classList.add('fuera');
-    pedirGrande(actual);
-  });
+      pedirGrande(actual);
+      dirty = true;
+    });
+  } else {
+    cargarParada(0, (n, de) => {
+      $('cargaBarra').style.width = Math.max(4, n / de * 100) + '%';
+      $('cargaTxt').textContent = 'Cargando vistas · ' + n + ' de ' + de;
+      if (n >= de) {
+        $('carga').classList.add('fuera');
+        setTimeout(() => $('ayuda').classList.add('on'), 600);
+        setTimeout(() => $('ayuda').classList.remove('on'), 6000);
+      }
+    }).then(() => {
+      $('carga').classList.add('fuera');
+      pedirGrande(actual);
+      dirty = true;
+    });
+  }
+  // Seguro: quitar pantalla de carga tras máximo 2.5s
+  setTimeout(() => { $('carga').classList.add('fuera'); dirty = true; }, 2500);
 
   requestAnimationFrame(bucle);
 })();
